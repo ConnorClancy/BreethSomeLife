@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+
+# Compose / jpackage output
+**/build/compose/
+
+# Java / JVM crash & profiling artifacts
+*.hprof
+hs_err_pid*
+replay_pid*
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# VS Code
+.vscode/
+
+# OS cruft
+.DS_Store
+Thumbs.db

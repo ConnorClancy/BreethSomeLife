@@ -1,0 +1,8 @@
+[versions]
+kotlin = "2.1.0"          # known-good pin (verified compatible with compose below)
+compose = "1.7.3"         # Compose Multiplatform plugin/runtime
+
+[plugins]
+kotlin-jvm     = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+compose        = { id = "org.jetbrains.compose", version.ref = "compose" }
