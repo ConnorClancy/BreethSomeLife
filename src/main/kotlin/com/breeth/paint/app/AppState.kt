@@ -1,10 +1,14 @@
 package com.breeth.paint.app
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.ImageBitmap
 import com.breeth.paint.model.Colors
+import com.breeth.paint.model.Frame
 import com.breeth.paint.model.PixelCanvas
+import com.breeth.paint.render.toImageBitmap
 import com.breeth.paint.tools.Brush
 import com.breeth.paint.tools.Eraser
 import com.breeth.paint.tools.Eyedropper
@@ -17,50 +21,72 @@ import com.breeth.paint.tools.ShapeTool
 import com.breeth.paint.tools.Tool
 import com.breeth.paint.tools.ToolEvent
 import com.breeth.paint.tools.ToolType
+import kotlin.math.min
 
 /**
  * The Store (impl doc §4): single source of UI/tool state.
  *
- * Scope note: build-order steps 1–5. Frames, the FrameManager, selection and
- * clipboard (§4 diagram, spec §6/§8) are deferred — for now there is a single
- * [canvas]. Undo/redo follows §15.3 so each stroke/shape collapses to one step;
- * a [Snapshot] also captures size + transparency so resize/toggle undo cleanly.
+ * Holds the sprite frame tabs (spec §8); per-frame state (pixels, transparency,
+ * undo/redo) lives on [Frame], while tool options and the viewport are global.
+ * Frame management (create/navigate/size-lock/delete, §8.2/§8.4/§8.5) and the
+ * onion-skin overlay (§8.3) are consolidated here rather than in a separate
+ * FrameManager, since they all operate over [frames]/[activeFrameIndex].
+ *
+ * Still deferred: selection / clipboard (spec §6) and file I/O (§7, §8.6).
  */
 class AppState {
     object CanvasDefaults {
         const val WIDTH = 800
         const val HEIGHT = 600
-        val BACKGROUND = Colors.WHITE          // opaque white; used by the opaque eraser / flatten
-        // Start transparent so the checkerboard is visible per build-order step 2
-        // ("CanvasView showing a checkerboard and an empty canvas"). This overrides
-        // spec §2.1's default-Off; the step-5 transparency toggle will switch it.
-        const val TRANSPARENT_MODE = true
-        const val HISTORY = 20                 // spec §6: minimum 20 undo steps
+        val BACKGROUND = Colors.WHITE
+        const val TRANSPARENT_MODE = true      // see Frame / background model
         const val MAX_SIZE = 4096              // spec §2.1 practical upper bound
     }
 
-    // --- Document (single canvas for now) ---------------------------------
-    val canvas: PixelCanvas = PixelCanvas(CanvasDefaults.WIDTH, CanvasDefaults.HEIGHT).also {
-        // Foreground starts empty (alpha 0); the background layer renders behind it.
-        it.fill(Colors.TRANSPARENT)
-    }
-    var backgroundColor: Int by mutableStateOf(CanvasDefaults.BACKGROUND)
-    var transparent: Boolean by mutableStateOf(CanvasDefaults.TRANSPARENT_MODE)
-
-    /** Bumped after every buffer mutation so the CanvasView re-uploads & redraws (§3.2). */
-    var version: Int by mutableStateOf(0)
+    // --- Frame tabs (spec §8.1) -------------------------------------------
+    val frames = mutableStateListOf(newBaseFrame())
+    var activeFrameIndex: Int by mutableStateOf(0)
         private set
 
-    // --- Tools & options --------------------------------------------------
+    val active: Frame get() = frames[activeFrameIndex]
+
+    // Delegating accessors so the UI/tools keep reading app.canvas/transparent/…
+    // while the data lives on the active frame.
+    val canvas: PixelCanvas get() = active.canvas
+    val transparent: Boolean get() = active.transparent
+    val backgroundColor: Int get() = active.backgroundColor
+    val version: Int get() = active.version
+    val canUndo: Boolean get() = active.canUndo
+    val canRedo: Boolean get() = active.canRedo
+    val onBase: Boolean get() = active.label == BASE
+    val canDeleteActive: Boolean get() = !onBase
+    val numberedFrameCount: Int get() = frames.count { it.label != BASE }
+
+    /** True while a text field (e.g. the hex color input) has focus, so number
+     *  keys are typed instead of triggering frame navigation. */
+    var textFieldFocused: Boolean by mutableStateOf(false)
+
+    // --- Tools & options (global) -----------------------------------------
     var activeTool: ToolType by mutableStateOf(ToolType.PENCIL)
     var primary: Int by mutableStateOf(Colors.BLACK)
     var secondary: Int by mutableStateOf(Colors.WHITE)
     var brushSize: Int by mutableStateOf(3)
     var brushAntialias: Boolean by mutableStateOf(true)
-    var fillMode: FillMode by mutableStateOf(FillMode.OUTLINE)   // shape/line outline+fill (spec §4.7)
-    var fillTolerance: Int by mutableStateOf(0)                  // flood-fill match threshold 0–255 (§14.2)
+    var fillMode: FillMode by mutableStateOf(FillMode.OUTLINE)
+    var fillTolerance: Int by mutableStateOf(0)
 
     val viewport = Viewport()
+
+    // --- Onion skin (spec §8.3) -------------------------------------------
+    var onionSkin: Boolean by mutableStateOf(false)
+        private set
+    var onionImage: ImageBitmap? by mutableStateOf(null)
+        private set
+
+    /** Locked size shared by all numbered frames (spec §8.4); null until the first is made. */
+    private var lockedW = 0
+    private var lockedH = 0
+    private val hasLock: Boolean get() = lockedW > 0
 
     private val pencil = Pencil()
     private val brush = Brush()
@@ -70,6 +96,9 @@ class AppState {
     private val line = LineTool()
     private val rectangle = ShapeTool(ShapeKind.RECTANGLE)
     private val ellipse = ShapeTool(ShapeKind.ELLIPSE)
+
+    private var gestureTool: Tool? = null
+    private var gestureFrame: Frame? = null
 
     fun toolInstance(): Tool = when (activeTool) {
         ToolType.PENCIL -> pencil
@@ -82,140 +111,165 @@ class AppState {
         ToolType.ELLIPSE -> ellipse
     }
 
-    // --- Undo / redo (impl doc §3.4, §15.3) -------------------------------
-
-    /** A restorable canvas state. Captures size + transparency so resize and the
-     *  transparency toggle undo correctly, not just pixel edits. */
-    private class Snapshot(
-        val width: Int,
-        val height: Int,
-        val pixels: IntArray,
-        val transparent: Boolean,
-        val backgroundColor: Int,
-    )
-
-    private val undoStack = ArrayDeque<Snapshot>()
-    private val redoStack = ArrayDeque<Snapshot>()
-    private var pendingUndo: Snapshot? = null
-    private var gestureTool: Tool? = null    // captured at press so it's stable across the gesture
-
-    // Reactive so the menu items / toolbar buttons (and their shortcuts) enable
-    // correctly as the stacks change — plain getters over the deques aren't observable.
-    var canUndo: Boolean by mutableStateOf(false)
-        private set
-    var canRedo: Boolean by mutableStateOf(false)
-        private set
-
-    private fun syncHistoryFlags() {
-        canUndo = undoStack.isNotEmpty()
-        canRedo = redoStack.isNotEmpty()
-    }
-
-    private fun bump() { version++ }
-
-    private fun snapshot(): Snapshot =
-        Snapshot(canvas.width, canvas.height, canvas.copyOfPixels(), transparent, backgroundColor)
-
-    private fun restore(s: Snapshot) {
-        canvas.width = s.width
-        canvas.height = s.height
-        canvas.pixels = s.pixels
-        transparent = s.transparent
-        backgroundColor = s.backgroundColor
-    }
-
-    private fun pushUndo(before: Snapshot) {
-        undoStack.addLast(before)
-        if (undoStack.size > CanvasDefaults.HISTORY) undoStack.removeFirst()
-        redoStack.clear()
-        syncHistoryFlags()
-    }
-
-    /** Run a whole-buffer op (clear/resize/toggle) as a single undo step. */
-    private fun edit(block: () -> Unit) {
-        val before = snapshot()
-        block()
-        pushUndo(before)
-        bump()
-    }
-
-    /** Gesture dispatch: snapshot-before, mutate, push-once (§15.3). */
+    // --- Gesture dispatch (operates on the active frame, §15.3) -----------
     fun onPress(e: ToolEvent) {
         val tool = toolInstance()
+        val frame = active
         gestureTool = tool
-        // Non-mutating tools (eyedropper) take no undo snapshot (§15.3).
-        pendingUndo = if (tool.mutates) snapshot() else null
-        tool.onPress(canvas, e, this)
-        if (tool.mutates) bump()   // #13: don't re-upload an unchanged buffer
+        gestureFrame = frame
+        frame.beginGesture(tool.mutates)
+        tool.onPress(frame.canvas, e, this)
+        if (tool.mutates) frame.bump()
     }
 
     fun onDrag(e: ToolEvent) {
         val tool = gestureTool ?: return
-        tool.onDrag(canvas, e, this)
-        if (tool.mutates) bump()
+        val frame = gestureFrame ?: return
+        tool.onDrag(frame.canvas, e, this)
+        if (tool.mutates) frame.bump()
     }
 
     fun onRelease(e: ToolEvent) {
         val tool = gestureTool
-        tool?.onRelease(canvas, e, this)
-        // #1: only record undo if pixels actually changed — no phantom entries
-        // from out-of-bounds taps, fill no-ops, or transparent-over-transparent.
-        pendingUndo?.let { before ->
-            if (!before.pixels.contentEquals(canvas.pixels)) pushUndo(before)
+        val frame = gestureFrame
+        if (tool != null && frame != null) {
+            tool.onRelease(frame.canvas, e, this)
+            frame.commitGesture()
+            if (tool.mutates) frame.bump()
         }
-        pendingUndo = null
         gestureTool = null
-        if (tool?.mutates == true) bump()
+        gestureFrame = null
     }
 
-    fun undo() {
-        val prev = undoStack.removeLastOrNull() ?: return
-        redoStack.addLast(snapshot())
-        restore(prev)
-        syncHistoryFlags()
-        bump()
-    }
+    fun undo() = active.undo()
+    fun redo() = active.redo()
 
-    fun redo() {
-        val next = redoStack.removeLastOrNull() ?: return
-        undoStack.addLast(snapshot())
-        restore(next)
-        syncHistoryFlags()
-        bump()
-    }
+    // --- Canvas operations (delegate to the active frame) -----------------
+    fun clearCanvas() = active.clearCanvas()
+    fun toggleTransparency() = active.toggleTransparency()
 
-    // --- Canvas operations (spec §2.4, impl doc §3.6–3.8) -----------------
-    //
-    // Background model: the pixel buffer is always the foreground-with-alpha.
-    // The background (transparent checkerboard vs. solid `backgroundColor`) is a
-    // display + export layer, never baked into pixels — so [toggleTransparency]
-    // is non-destructive and export can faithfully keep or flatten alpha.
-    // (This deviates from spec §3.8's destructive ON→OFF flatten by design.)
-
-    /** New document: reset to defaults, zoom to 100%, and clear history (not undoable, spec §2.4). */
-    fun newDocument() {
-        backgroundColor = CanvasDefaults.BACKGROUND
-        transparent = CanvasDefaults.TRANSPARENT_MODE
-        canvas.resizeTo(CanvasDefaults.WIDTH, CanvasDefaults.HEIGHT, Colors.TRANSPARENT)
-        undoStack.clear()
-        redoStack.clear()
-        pendingUndo = null
-        syncHistoryFlags()
-        viewport.reset()
-        bump()
-    }
-
-    /** Clear the foreground to empty; the background layer shows behind it (spec §2.4). One undo step. */
-    fun clearCanvas() = edit { canvas.fill(Colors.TRANSPARENT) }
-
-    /** Resize/crop, anchored top-left; new area is empty foreground (spec §2.2, impl doc §3.6). */
+    /**
+     * Resize (spec §2.4, §3.6). Only `base` is resizable (the UI greys it out on
+     * numbered frames); the resize **propagates to every frame** so they stay the
+     * same size (and aligned for onion-skin), cropping right/bottom as needed.
+     * (Deviates from spec §8.4's "base exempt" by request.)
+     */
     fun resizeCanvas(newW: Int, newH: Int) {
+        if (!onBase) return
         val w = newW.coerceIn(1, CanvasDefaults.MAX_SIZE)
         val h = newH.coerceIn(1, CanvasDefaults.MAX_SIZE)
-        if (w == canvas.width && h == canvas.height) return
-        edit { canvas.resizeTo(w, h, Colors.TRANSPARENT) }
+        if (w == active.canvas.width && h == active.canvas.height) return
+        for (f in frames) f.resizeTo(w, h)
+        if (hasLock) { lockedW = w; lockedH = h }   // keep numbered-frame lock in sync
     }
 
-    /** Toggle the background on/off (non-destructive); pixels are untouched. One undo step. */
-    fun toggleTransparency() = edit { transparent = !transparent }
+    /** New document: discard all tabs, start a fresh `base`, reset zoom & lock (spec §2.4, §3.7). */
+    fun newDocument() {
+        frames.clear()
+        frames.add(newBaseFrame())
+        activeFrameIndex = 0
+        lockedW = 0
+        lockedH = 0
+        clearOnion()
+        viewport.reset()
+    }
+
+    // --- Frame management (spec §8.2, §8.4, §8.5) -------------------------
+
+    /** Activate an existing tab by index. */
+    fun activateFrame(index: Int) {
+        if (index in frames.indices && index != activeFrameIndex) {
+            activeFrameIndex = index
+            clearOnion()    // a stale previous-frame snapshot would no longer apply
+        }
+    }
+
+    /** Number key: navigate to tab `n`, creating it (as a snapshot of the nearest lower tab) if absent (§8.2). */
+    fun gotoOrCreateFrame(n: Int) {
+        if (n !in 1..9) return
+        val existing = frames.indexOfFirst { it.label == n.toString() }
+        if (existing >= 0) {
+            activateFrame(existing)
+            return
+        }
+        val source = highestFrameBelow(n)
+        // First numbered frame establishes the locked size from base's size now (§8.4).
+        val w = if (hasLock) lockedW else source.canvas.width
+        val h = if (hasLock) lockedH else source.canvas.height
+        val frame = Frame(
+            label = n.toString(),
+            canvas = PixelCanvas(w, h, copyPixels(source.canvas, w, h)),
+            transparent = source.transparent,
+            backgroundColor = source.backgroundColor,
+        )
+        var insertAt = frames.indexOfFirst { key(it.label) > n }
+        if (insertAt < 0) insertAt = frames.size
+        frames.add(insertAt, frame)
+        if (!hasLock) { lockedW = w; lockedH = h }
+        activeFrameIndex = insertAt
+        clearOnion()
+    }
+
+    /** Delete a numbered tab and renumber higher tabs down by one (§8.5). `base` can't be deleted. */
+    fun deleteFrame(index: Int) {
+        val frame = frames.getOrNull(index) ?: return
+        if (frame.label == BASE) return
+        val keepActive = active
+        frames.removeAt(index)
+        var n = 1
+        for (f in frames) if (f.label != BASE) f.label = (n++).toString()
+        if (frames.none { it.label != BASE }) { lockedW = 0; lockedH = 0 }   // lock released when none remain
+        activeFrameIndex = if (frame === keepActive) {
+            index.coerceAtMost(frames.size - 1)
+        } else {
+            frames.indexOf(keepActive)
+        }
+        clearOnion()
+    }
+
+    /** Highest existing tab whose index is `< n` (base counts as 0); always at least `base` (§8.2). */
+    private fun highestFrameBelow(n: Int): Frame =
+        frames.filter { key(it.label) < n }.maxByOrNull { key(it.label) } ?: frames.first()
+
+    private fun key(label: String): Int = if (label == BASE) 0 else label.toInt()
+
+    /** Copy `source` pixels into a w×h block, anchored top-left (crop/extend transparent). */
+    private fun copyPixels(source: PixelCanvas, w: Int, h: Int): IntArray {
+        val dst = IntArray(w * h) { Colors.TRANSPARENT }
+        val copyW = min(source.width, w)
+        val copyH = min(source.height, h)
+        for (y in 0 until copyH) {
+            System.arraycopy(source.pixels, y * source.width, dst, y * w, copyW)
+        }
+        return dst
+    }
+
+    // --- Onion skin (spec §8.3) -------------------------------------------
+
+    /** Toggle the previous-frame overlay (no-op on `base`). Snapshots at toggle time. */
+    fun toggleOnionSkin() {
+        if (onBase) return
+        if (onionSkin) {
+            clearOnion()
+        } else {
+            onionImage = highestFrameBelow(key(active.label)).canvas.toImageBitmap()
+            onionSkin = true
+        }
+    }
+
+    private fun clearOnion() {
+        onionSkin = false
+        onionImage = null
+    }
+
+    private fun newBaseFrame(): Frame = Frame(
+        label = BASE,
+        canvas = PixelCanvas(CanvasDefaults.WIDTH, CanvasDefaults.HEIGHT).also { it.fill(Colors.TRANSPARENT) },
+        transparent = CanvasDefaults.TRANSPARENT_MODE,
+        backgroundColor = CanvasDefaults.BACKGROUND,
+    )
+
+    private companion object {
+        const val BASE = "base"
+    }
 }

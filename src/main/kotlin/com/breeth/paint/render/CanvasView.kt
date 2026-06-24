@@ -47,11 +47,11 @@ import kotlin.math.roundToInt
  */
 @Composable
 fun CanvasView(app: AppState, modifier: Modifier = Modifier) {
-    // Re-upload the buffer whenever a mutation bumps the version (§3.2). Reading
-    // app.version here also schedules recomposition on change. The cache reuses a
-    // single long-lived BufferedImage across frames (#6).
+    // Re-upload the buffer whenever a mutation bumps the version (§3.2) or the
+    // active frame changes (different frames can share a version number). The
+    // cache reuses a single long-lived BufferedImage across frames (#6).
     val imageCache = remember { CanvasImageCache() }
-    val image = remember(app.version) { imageCache.render(app.canvas) }
+    val image = remember(app.activeFrameIndex, app.version) { imageCache.render(app.canvas) }
 
     // Built once: a 2x2-cell tile repeated by the shader (screen-anchored).
     val checkerBrush = remember {
@@ -163,6 +163,24 @@ fun CanvasView(app: AppState, modifier: Modifier = Modifier) {
                 dstSize = IntSize(((srcR - srcL) * scale).roundToInt(), ((srcB - srcT) * scale).roundToInt()),
                 filterQuality = FilterQuality.None,   // crisp pixels at >100% zoom (spec §2.2)
             )
+        }
+
+        // Onion skin (spec §8.3): the snapshotted previous frame, drawn on top of
+        // the current canvas at 30% alpha, aligned to the same pixel grid. Display
+        // only — never written to any buffer. Clipped to the current canvas rect.
+        val onion = app.onionImage
+        if (app.onionSkin && onion != null) {
+            clipRect(left, top, right, bottom) {
+                drawImage(
+                    image = onion,
+                    srcOffset = IntOffset.Zero,
+                    srcSize = IntSize(onion.width, onion.height),
+                    dstOffset = IntOffset(pan.x.roundToInt(), pan.y.roundToInt()),
+                    dstSize = IntSize((onion.width * scale).roundToInt(), (onion.height * scale).roundToInt()),
+                    alpha = 0.30f,
+                    filterQuality = FilterQuality.None,
+                )
+            }
         }
     }
 }

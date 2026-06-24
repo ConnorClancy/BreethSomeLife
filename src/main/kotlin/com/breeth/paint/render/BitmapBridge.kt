@@ -31,3 +31,14 @@ class CanvasImageCache {
         return img.toComposeImageBitmap()
     }
 }
+
+/**
+ * One-off conversion of a canvas to an [ImageBitmap] — used for the onion-skin
+ * snapshot (spec §8.3), which is captured once at toggle time (not per frame),
+ * so it doesn't need the reusing cache.
+ */
+fun PixelCanvas.toImageBitmap(): ImageBitmap {
+    val img = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
+    img.setRGB(0, 0, width, height, pixels, 0, width)
+    return img.toComposeImageBitmap()
+}

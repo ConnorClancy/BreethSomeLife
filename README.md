@@ -19,9 +19,13 @@ Build-order steps **1–4** of `paint-impl.md` §12 are implemented:
    undo/redo.
 5. **Canvas ops** — New, Clear, Resize/crop, and the Transparency toggle
    (§3.6–3.8), exposed via the window menu bar.
+6. **Sprite frame tabs** (§8.1–8.2, §8.4–8.5) — `base` + numbered `1`–`9`
+   frames, each an independent canvas with its own undo history. Number keys
+   create-on-demand (snapshot-copied from the nearest lower frame) or navigate;
+   `0` jumps to `base`. Numbered frames are size-locked; deleting renumbers.
+7. **Onion-skin overlay** (§8.3) — `Shift+O` overlays the previous frame at 30%.
 
-Not yet implemented (later steps): frame tabs, onion-skin, file I/O, and
-selection/clipboard.
+Not yet implemented (later steps): file I/O / save-all, and selection/clipboard.
 
 ## Running (development)
 
@@ -53,11 +57,22 @@ selection/clipboard.
   `Shift` + wheel = horizontal.
 - **Undo / Redo:** toolbar buttons, or `Ctrl+Z` / `Ctrl+Shift+Z`.
 - **Menu bar:** **File ▸ New** (`Ctrl+N`); **Edit ▸ Undo/Redo/Clear Canvas**;
-  **Image ▸ Resize…** and **Transparent Background** (toggle). Resize is
-  anchored top-left. The background is a non-destructive display/export layer:
-  the pixel buffer always holds the foreground (with alpha), and toggling
-  Transparent Background just switches what renders behind it (checkerboard vs.
-  the solid background color) without altering pixels.
+  **Image ▸ Resize…** and **Transparent Background** (toggle); **Frame ▸ Onion
+  Skin** and **Delete Current Frame**. Resize is anchored top-left and is only
+  available on `base`; it propagates to every frame (with a warning) so they
+  stay aligned. The background is a non-destructive display/export layer: the
+  pixel buffer always
+  holds the foreground (with alpha), and toggling Transparent Background just
+  switches what renders behind it (checkerboard vs. the solid background color)
+  without altering pixels.
+- **Frames:** the tab bar shows `base` and numbered frames; click a tab to
+  switch, or press **`1`–`9`** to create/navigate and **`0`** for `base`. Each
+  frame keeps its own pixels and undo history; a new numbered frame is a
+  snapshot copy of the nearest lower frame. Numbered frames share one locked
+  size. Delete a numbered frame with the **✕** on its tab (renumbers the rest).
+- **Onion skin:** on any non-`base` frame, **`Shift+O`** (or the tab-bar/menu
+  toggle) overlays the previous frame at 30% to trace against; it's a snapshot,
+  so re-toggle to refresh after editing the previous frame.
 
 ## Building the Windows installer (MSI)
 

@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isSecondaryPressed
@@ -134,7 +135,8 @@ private fun HexField(app: AppState) {
         },
         label = { Text("Hex", fontSize = 10.sp) },
         singleLine = true,
-        modifier = Modifier.width(120.dp),
+        // Report focus so number keys are typed here instead of switching frames.
+        modifier = Modifier.width(120.dp).onFocusChanged { app.textFieldFocused = it.isFocused },
     )
 }
 
