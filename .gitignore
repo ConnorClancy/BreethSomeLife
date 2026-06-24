@@ -17,8 +17,12 @@ replay_pid*
 *.iws
 out/
 
-# VS Code
+# VS Code / Eclipse JDT (Java language server compiles to bin/)
 .vscode/
+bin/
+.classpath
+.project
+.settings/
 
 # OS cruft
 .DS_Store

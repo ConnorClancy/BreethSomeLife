@@ -6,6 +6,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.ShaderBrush
@@ -70,14 +71,17 @@ fun CanvasView(app: AppState, modifier: Modifier = Modifier) {
                     val mods = event.keyboardModifiers
                     val compW = size.width.toFloat()
                     val compH = size.height.toFloat()
+                    // Read canvas dims live so hit-testing follows a resize (#14).
+                    val cw = app.canvas.width
+                    val ch = app.canvas.height
                     // Keep the transform in sync with hit-testing (§15.1).
-                    app.viewport.pan = app.viewport.resolvePan(compW, compH, w, h)
+                    app.viewport.pan = app.viewport.resolvePan(compW, compH, cw, ch)
                     when (event.type) {
                         PointerEventType.Scroll -> {
                             val d = change.scrollDelta
                             if (mods.isCtrlPressed) {
                                 if (d.y != 0f) {
-                                    app.viewport.zoomAround(change.position, into = d.y < 0, compW, compH, w, h)
+                                    app.viewport.zoomAround(change.position, into = d.y < 0, compW, compH, cw, ch)
                                 }
                             } else {
                                 val delta = if (mods.isShiftPressed) {
@@ -87,7 +91,7 @@ fun CanvasView(app: AppState, modifier: Modifier = Modifier) {
                                 }
                                 app.viewport.userScroll += delta
                             }
-                            app.viewport.clampScroll(compW, compH, w, h)
+                            app.viewport.clampScroll(compW, compH, cw, ch)
                             change.consume()
                         }
 
@@ -131,10 +135,17 @@ fun CanvasView(app: AppState, modifier: Modifier = Modifier) {
         val bottom = minOf(pan.y + h * scale, size.height)
         if (right <= left || bottom <= top) return@Canvas
 
-        // Checkerboard: one tiled-shader fill, fixed 8px cells anchored to the
-        // screen origin so it stays static under zoom/pan.
+        // Background layer behind the image (display only; never baked into pixels):
+        // transparent → checkerboard (spec §2.3), opaque → the solid background color.
+        // Both read app.transparent / backgroundColor here so toggling repaints reactively.
         clipRect(left, top, right, bottom) {
-            drawRect(checkerBrush, topLeft = Offset(left, top), size = Size(right - left, bottom - top))
+            val origin = Offset(left, top)
+            val sizePx = Size(right - left, bottom - top)
+            if (app.transparent) {
+                drawRect(checkerBrush, topLeft = origin, size = sizePx)
+            } else {
+                drawRect(Color(app.backgroundColor), topLeft = origin, size = sizePx)
+            }
         }
 
         // Bitmap: draw only the visible source sub-rectangle, scaled. Bounds the

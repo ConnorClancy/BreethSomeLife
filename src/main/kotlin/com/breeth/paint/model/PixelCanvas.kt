@@ -33,5 +33,22 @@ class PixelCanvas(
         pixels.fill(argb)
     }
 
+    /**
+     * Resize/crop in place, anchored at the top-left origin (impl doc §3.6,
+     * spec §2.2). New area is filled with [fill]; cropped right/bottom pixels
+     * are discarded; existing content never moves.
+     */
+    fun resizeTo(newW: Int, newH: Int, fill: Int) {
+        val dst = IntArray(newW * newH) { fill }
+        val copyW = minOf(width, newW)
+        val copyH = minOf(height, newH)
+        for (y in 0 until copyH) {
+            System.arraycopy(pixels, y * width, dst, y * newW, copyW)
+        }
+        pixels = dst
+        width = newW
+        height = newH
+    }
+
     fun copyOfPixels(): IntArray = pixels.copyOf()
 }

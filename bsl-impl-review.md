@@ -15,7 +15,7 @@ notes the location and a suggested fix.
 
 **4. `Ctrl`+wheel zoom is not cursor-anchored.** The scroll handler just calls `zoomIn()/zoomOut()` (`CanvasView.kt:76-77`), which only change `scale`; the image stays centered. §15.1 explicitly requires keeping the pixel under the cursor fixed by adjusting `pan/userScroll` on zoom. Fix: after changing `scale`, adjust `userScroll` so the canvas pixel under the cursor maps back to the same screen point. **ADDRESSED - ADDED** — new `Viewport.zoomAround(cursor, …)` solves for the scroll that keeps the pixel under the cursor fixed; the `Ctrl`+wheel branch in `CanvasView` now calls it with `change.position`.
 
-**5. Checkerboard is drawn unconditionally.** `CanvasView.kt:132-134` always fills the checkerboard, ignoring `app.transparent`. It's currently invisible because the canvas starts fully transparent and opaque pixels cover it, but spec §2.3 says the checkerboard is the transparent-mode indicator only. Once the transparency toggle (step 5) or opaque PNG import lands, an opaque canvas with any `alpha==0` pixels would wrongly show checker. Fix: gate the checker pass on `app.transparent` (and read it in the draw scope so it's reactive).
+**5. Checkerboard is drawn unconditionally.** `CanvasView.kt:132-134` always fills the checkerboard, ignoring `app.transparent`. It's currently invisible because the canvas starts fully transparent and opaque pixels cover it, but spec §2.3 says the checkerboard is the transparent-mode indicator only. Once the transparency toggle (step 5) or opaque PNG import lands, an opaque canvas with any `alpha==0` pixels would wrongly show checker. Fix: gate the checker pass on `app.transparent` (and read it in the draw scope so it's reactive). **ADDRESSED - ADDED** (step 5) — the checkerboard pass is now wrapped in `if (app.transparent)` inside the draw scope.
 
 ## Efficiency
 
@@ -39,7 +39,7 @@ notes the location and a suggested fix.
 
 ## Minor / polish
 
-**14. `pointerInput(app)` captures `w`/`h` once** (`CanvasView.kt:58-59`); since `app` is stable the input coroutine won't restart, so a future canvas resize would leave stale dimensions for hit-testing. Read `app.canvas.width/height` inside the loop, or key the modifier on the dimensions, before step 5 lands.
+**14. `pointerInput(app)` captures `w`/`h` once** (`CanvasView.kt:58-59`); since `app` is stable the input coroutine won't restart, so a future canvas resize would leave stale dimensions for hit-testing. Read `app.canvas.width/height` inside the loop, or key the modifier on the dimensions, before step 5 lands. **ADDRESSED - ADDED** (step 5) — the pointer loop now reads `app.canvas.width/height` on each event, so hit-testing follows a resize.
 
 **15. Stale doc comments.** `Tool.kt:41` references `AppState.beginStroke/endStroke` which don't exist (the methods are `onPress/onDrag/onRelease`), and `floodFill`'s "scanline" comment (`ShapeRaster.kt:79`) is inaccurate. Quick cleanups.
 

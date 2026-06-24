@@ -5,15 +5,13 @@ import com.breeth.paint.model.Colors
 import com.breeth.paint.model.PixelCanvas
 
 /**
- * Eraser (spec §4.3):
- * - opaque canvas → paints the frame's background color over the path.
- * - transparent canvas → punches pixels back to fully transparent (alpha = 0).
- *
- * Hard-edged replace either way, same path interpolation as the pencil.
+ * Eraser (spec §4.3): removes foreground by punching pixels to fully transparent
+ * (alpha = 0). The background layer (checkerboard when transparent, else the
+ * solid background color) shows through — so erasing is non-destructive and
+ * consistent in both modes. Hard-edged, same path interpolation as the pencil.
  */
 class Eraser : FreehandTool() {
     override fun stamp(canvas: PixelCanvas, x: Int, y: Int, app: AppState, e: ToolEvent) {
-        val color = if (app.transparent) Colors.TRANSPARENT else app.backgroundColor
-        disc(canvas, x, y, app, color, antialias = false, replace = true)
+        disc(canvas, x, y, app, Colors.TRANSPARENT, antialias = false, replace = true)
     }
 }

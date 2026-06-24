@@ -21,9 +21,10 @@ import com.breeth.paint.tools.ToolType
 /**
  * The Store (impl doc §4): single source of UI/tool state.
  *
- * Scope note: build-order steps 1–4. Frames, the FrameManager, selection and
+ * Scope note: build-order steps 1–5. Frames, the FrameManager, selection and
  * clipboard (§4 diagram, spec §6/§8) are deferred — for now there is a single
- * [canvas]. Undo/redo follows §15.3 so each stroke/shape collapses to one step.
+ * [canvas]. Undo/redo follows §15.3 so each stroke/shape collapses to one step;
+ * a [Snapshot] also captures size + transparency so resize/toggle undo cleanly.
  */
 class AppState {
     object CanvasDefaults {
@@ -35,13 +36,13 @@ class AppState {
         // spec §2.1's default-Off; the step-5 transparency toggle will switch it.
         const val TRANSPARENT_MODE = true
         const val HISTORY = 20                 // spec §6: minimum 20 undo steps
+        const val MAX_SIZE = 4096              // spec §2.1 practical upper bound
     }
 
     // --- Document (single canvas for now) ---------------------------------
     val canvas: PixelCanvas = PixelCanvas(CanvasDefaults.WIDTH, CanvasDefaults.HEIGHT).also {
-        // Transparent mode: unpainted area is alpha-0 (checkerboard shows through).
-        // In opaque mode it would instead be filled with BACKGROUND (impl doc §3.7).
-        it.fill(if (CanvasDefaults.TRANSPARENT_MODE) Colors.TRANSPARENT else CanvasDefaults.BACKGROUND)
+        // Foreground starts empty (alpha 0); the background layer renders behind it.
+        it.fill(Colors.TRANSPARENT)
     }
     var backgroundColor: Int by mutableStateOf(CanvasDefaults.BACKGROUND)
     var transparent: Boolean by mutableStateOf(CanvasDefaults.TRANSPARENT_MODE)
@@ -82,22 +83,68 @@ class AppState {
     }
 
     // --- Undo / redo (impl doc §3.4, §15.3) -------------------------------
-    private val undoStack = ArrayDeque<IntArray>()
-    private val redoStack = ArrayDeque<IntArray>()
-    private var pendingUndo: IntArray? = null
+
+    /** A restorable canvas state. Captures size + transparency so resize and the
+     *  transparency toggle undo correctly, not just pixel edits. */
+    private class Snapshot(
+        val width: Int,
+        val height: Int,
+        val pixels: IntArray,
+        val transparent: Boolean,
+        val backgroundColor: Int,
+    )
+
+    private val undoStack = ArrayDeque<Snapshot>()
+    private val redoStack = ArrayDeque<Snapshot>()
+    private var pendingUndo: Snapshot? = null
     private var gestureTool: Tool? = null    // captured at press so it's stable across the gesture
 
-    val canUndo: Boolean get() = undoStack.isNotEmpty()
-    val canRedo: Boolean get() = redoStack.isNotEmpty()
+    // Reactive so the menu items / toolbar buttons (and their shortcuts) enable
+    // correctly as the stacks change — plain getters over the deques aren't observable.
+    var canUndo: Boolean by mutableStateOf(false)
+        private set
+    var canRedo: Boolean by mutableStateOf(false)
+        private set
+
+    private fun syncHistoryFlags() {
+        canUndo = undoStack.isNotEmpty()
+        canRedo = redoStack.isNotEmpty()
+    }
 
     private fun bump() { version++ }
+
+    private fun snapshot(): Snapshot =
+        Snapshot(canvas.width, canvas.height, canvas.copyOfPixels(), transparent, backgroundColor)
+
+    private fun restore(s: Snapshot) {
+        canvas.width = s.width
+        canvas.height = s.height
+        canvas.pixels = s.pixels
+        transparent = s.transparent
+        backgroundColor = s.backgroundColor
+    }
+
+    private fun pushUndo(before: Snapshot) {
+        undoStack.addLast(before)
+        if (undoStack.size > CanvasDefaults.HISTORY) undoStack.removeFirst()
+        redoStack.clear()
+        syncHistoryFlags()
+    }
+
+    /** Run a whole-buffer op (clear/resize/toggle) as a single undo step. */
+    private fun edit(block: () -> Unit) {
+        val before = snapshot()
+        block()
+        pushUndo(before)
+        bump()
+    }
 
     /** Gesture dispatch: snapshot-before, mutate, push-once (§15.3). */
     fun onPress(e: ToolEvent) {
         val tool = toolInstance()
         gestureTool = tool
         // Non-mutating tools (eyedropper) take no undo snapshot (§15.3).
-        pendingUndo = if (tool.mutates) canvas.copyOfPixels() else null
+        pendingUndo = if (tool.mutates) snapshot() else null
         tool.onPress(canvas, e, this)
         if (tool.mutates) bump()   // #13: don't re-upload an unchanged buffer
     }
@@ -113,12 +160,8 @@ class AppState {
         tool?.onRelease(canvas, e, this)
         // #1: only record undo if pixels actually changed — no phantom entries
         // from out-of-bounds taps, fill no-ops, or transparent-over-transparent.
-        pendingUndo?.let { snapshot ->
-            if (!snapshot.contentEquals(canvas.pixels)) {
-                undoStack.addLast(snapshot)
-                if (undoStack.size > CanvasDefaults.HISTORY) undoStack.removeFirst()
-                redoStack.clear()
-            }
+        pendingUndo?.let { before ->
+            if (!before.pixels.contentEquals(canvas.pixels)) pushUndo(before)
         }
         pendingUndo = null
         gestureTool = null
@@ -127,15 +170,52 @@ class AppState {
 
     fun undo() {
         val prev = undoStack.removeLastOrNull() ?: return
-        redoStack.addLast(canvas.copyOfPixels())
-        canvas.pixels = prev
+        redoStack.addLast(snapshot())
+        restore(prev)
+        syncHistoryFlags()
         bump()
     }
 
     fun redo() {
         val next = redoStack.removeLastOrNull() ?: return
-        undoStack.addLast(canvas.copyOfPixels())
-        canvas.pixels = next
+        undoStack.addLast(snapshot())
+        restore(next)
+        syncHistoryFlags()
         bump()
     }
+
+    // --- Canvas operations (spec §2.4, impl doc §3.6–3.8) -----------------
+    //
+    // Background model: the pixel buffer is always the foreground-with-alpha.
+    // The background (transparent checkerboard vs. solid `backgroundColor`) is a
+    // display + export layer, never baked into pixels — so [toggleTransparency]
+    // is non-destructive and export can faithfully keep or flatten alpha.
+    // (This deviates from spec §3.8's destructive ON→OFF flatten by design.)
+
+    /** New document: reset to defaults, zoom to 100%, and clear history (not undoable, spec §2.4). */
+    fun newDocument() {
+        backgroundColor = CanvasDefaults.BACKGROUND
+        transparent = CanvasDefaults.TRANSPARENT_MODE
+        canvas.resizeTo(CanvasDefaults.WIDTH, CanvasDefaults.HEIGHT, Colors.TRANSPARENT)
+        undoStack.clear()
+        redoStack.clear()
+        pendingUndo = null
+        syncHistoryFlags()
+        viewport.reset()
+        bump()
+    }
+
+    /** Clear the foreground to empty; the background layer shows behind it (spec §2.4). One undo step. */
+    fun clearCanvas() = edit { canvas.fill(Colors.TRANSPARENT) }
+
+    /** Resize/crop, anchored top-left; new area is empty foreground (spec §2.2, impl doc §3.6). */
+    fun resizeCanvas(newW: Int, newH: Int) {
+        val w = newW.coerceIn(1, CanvasDefaults.MAX_SIZE)
+        val h = newH.coerceIn(1, CanvasDefaults.MAX_SIZE)
+        if (w == canvas.width && h == canvas.height) return
+        edit { canvas.resizeTo(w, h, Colors.TRANSPARENT) }
+    }
+
+    /** Toggle the background on/off (non-destructive); pixels are untouched. One undo step. */
+    fun toggleTransparency() = edit { transparent = !transparent }
 }

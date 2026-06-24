@@ -44,8 +44,13 @@ fun ControlsPanel(app: AppState, modifier: Modifier = Modifier) {
         ) {
             ToolButtons(app)
             BrushControls(app)
-            ShapeOptions(app)
-            FillToleranceControl(app)
+            // Tool-specific options only appear for the relevant tool.
+            if (app.activeTool == ToolType.RECTANGLE || app.activeTool == ToolType.ELLIPSE) {
+                ShapeOptions(app)
+            }
+            if (app.activeTool == ToolType.FILL) {
+                FillToleranceControl(app)
+            }
             ZoomControls(app)
             HistoryButtons(app)
             ColorPicker(app)

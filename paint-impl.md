@@ -589,3 +589,9 @@ Re-uploading the entire `ImageBitmap` on every `version` bump is fine at 800×60
 - A full reupload is still used for whole-buffer ops (resize, transparency-flatten, clear, import).
 
 > Dirty-rect tracking is shared plumbing: the same accumulated rect can later feed the undo dirty-diff optimization noted in §3.4, so build the `DirtyRect` accumulator once in the gesture loop.
+
+## followup notes
+Show relative UIs as floating windows when relative tool is being used:
+e.g.
+- show the Tolerance slider only when Fill is selected
+- show the Outline/Filled/Both buttons only when Rectangle/Ellipse is selected

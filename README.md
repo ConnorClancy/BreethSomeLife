@@ -17,9 +17,11 @@ Build-order steps **1–4** of `paint-impl.md` §12 are implemented:
 4. **Fill bucket** (4-connected, tolerance), **eyedropper**, **line**, and
    **rectangle / ellipse** shapes (outline / filled / both) with live preview;
    undo/redo.
+5. **Canvas ops** — New, Clear, Resize/crop, and the Transparency toggle
+   (§3.6–3.8), exposed via the window menu bar.
 
-Not yet implemented (later steps): canvas ops (new/clear/resize/transparency
-toggle), frame tabs, onion-skin, file I/O, and selection/clipboard.
+Not yet implemented (later steps): frame tabs, onion-skin, file I/O, and
+selection/clipboard.
 
 ## Running (development)
 
@@ -49,7 +51,13 @@ toggle), frame tabs, onion-skin, file I/O, and selection/clipboard.
   25%–1000% (integer stops are crisp nearest-neighbor per spec §2.2).
 - **Pan** (when zoomed past the viewport): mouse wheel = vertical,
   `Shift` + wheel = horizontal.
-- **Undo / Redo:** toolbar buttons, or `Ctrl+Z` / `Ctrl+Shift+Z` (`Ctrl+Y`).
+- **Undo / Redo:** toolbar buttons, or `Ctrl+Z` / `Ctrl+Shift+Z`.
+- **Menu bar:** **File ▸ New** (`Ctrl+N`); **Edit ▸ Undo/Redo/Clear Canvas**;
+  **Image ▸ Resize…** and **Transparent Background** (toggle). Resize is
+  anchored top-left. The background is a non-destructive display/export layer:
+  the pixel buffer always holds the foreground (with alpha), and toggling
+  Transparent Background just switches what renders behind it (checkerboard vs.
+  the solid background color) without altering pixels.
 
 ## Building the Windows installer (MSI)
 
