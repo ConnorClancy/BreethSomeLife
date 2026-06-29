@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isSecondaryPressed
@@ -120,7 +121,7 @@ private fun ColorBox(argb: Int, size: Int, onPick: ((MouseButton) -> Unit)? = nu
 @Composable
 private fun HexField(app: AppState) {
     var text by remember { mutableStateOf(toHex(app.primary)) }
-    // #2: re-sync when primary changes elsewhere (eyedropper / palette swatch),
+    // Re-sync when primary changes elsewhere (eyedropper / palette swatch),
     // but leave an in-progress edit alone when it already represents the value.
     LaunchedEffect(app.primary) {
         val hex = toHex(app.primary)
@@ -134,7 +135,8 @@ private fun HexField(app: AppState) {
         },
         label = { Text("Hex", fontSize = 10.sp) },
         singleLine = true,
-        modifier = Modifier.width(120.dp),
+        // Report focus so number keys are typed here instead of switching frames.
+        modifier = Modifier.width(120.dp).onFocusChanged { app.textFieldFocused = it.isFocused },
     )
 }
 

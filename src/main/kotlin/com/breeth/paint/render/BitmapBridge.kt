@@ -13,7 +13,7 @@ import java.awt.image.BufferedImage
  * ints — exactly our packing — so `setRGB` is a bulk array copy with no
  * per-pixel conversion.
  *
- * #6: the backing [BufferedImage] is **reused** across frames (reallocated only
+ * The backing [BufferedImage] is **reused** across frames (reallocated only
  * when the canvas size changes), so a live stroke no longer allocates a fresh
  * `w*h` int buffer on every pointer-move — eliminating that per-frame GC churn.
  * The final Compose upload still happens each frame; the dirty-rect GPU
@@ -30,4 +30,15 @@ class CanvasImageCache {
         img.setRGB(0, 0, w, h, canvas.pixels, 0, w)
         return img.toComposeImageBitmap()
     }
+}
+
+/**
+ * One-off conversion of a canvas to an [ImageBitmap] — used for the onion-skin
+ * snapshot (spec §8.3), which is captured once at toggle time (not per frame),
+ * so it doesn't need the reusing cache.
+ */
+fun PixelCanvas.toImageBitmap(): ImageBitmap {
+    val img = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
+    img.setRGB(0, 0, width, height, pixels, 0, width)
+    return img.toComposeImageBitmap()
 }

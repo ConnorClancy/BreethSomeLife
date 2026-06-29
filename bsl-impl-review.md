@@ -58,3 +58,59 @@ snapshot-restore previews, one-gesture undo) is sound and matches the design doc
 well. The highest-value fixes are **#1 (phantom undo)**, **#2 (hex desync)**, and
 **#3 (AA brush buildup)** for correctness, and **#6–#8** for performance before
 larger canvases arrive.
+
+---
+
+# PR #1 review — Steps 6 & 7 (frame tabs + onion-skin overlay)
+
+Reviewed `origin/pr-1` (`ec125a2`) against its base (`952e89a`, step 5). New
+`Frame.kt`, `ui/TabBar.kt`; reworked `AppState.kt` (frames + `activeFrameIndex`,
+delegating accessors, per-frame undo); `Main.kt` (number-key / Shift+O handling,
+Edit + Frame menus), `CanvasView.kt` (onion draw), `BitmapBridge.kt`,
+`ColorPicker.kt` (focus reporting), `ResizeDialog.kt` (resize warning).
+
+Overall the frame model is clean: independent `Frame` (own pixels, transparency,
+background, undo/redo), contiguous sorted `frames` list, correct nearest-lower
+snapshot copy (§8.2), size lock (§8.4), delete + renumber (§8.5), and a
+snapshot-at-toggle onion overlay cleared on every frame switch (§8.3). The
+review-#1/#6/#13 fixes carried over correctly. Findings below use a separate
+`PR-n` numbering. (Static review only — not compiled/run; see PR-10.)
+
+## Correctness bugs
+
+**PR-1. Propagated resize + per-frame undo diverges frame sizes (breaks the size-lock invariant and onion alignment).** `resizeCanvas` applies the resize to every frame as *independent* operations — `for (f in frames) f.resizeTo(w, h)` (`AppState.kt:162`), and each `Frame.resizeTo` is its own `edit { … }` that pushes a separate undo entry onto *that frame's* stack (`Frame.kt:116`). But `app.undo()` only undoes the **active** frame (`AppState.kt` → `active.undo()`). So after resizing `base` from 800×600 to 400×400 (which correctly resizes all frames), pressing Ctrl+Z reverts only the active frame to 800×600 while the others stay 400×400 — frames now have **different sizes**, violating §8.4's size-lock and de-aligning the onion overlay (which assumes equal dimensions). `lockedW/lockedH` (`AppState.kt:163`) also goes stale relative to the now-divergent frames, so the next created frame inherits a wrong size. Fix: make a propagated resize one atomic, app-level undo step (snapshot every frame's size/pixels together and revert them together), or store the pre-resize sizes so undo restores all frames at once. **ACCEPTED - ADDED** — `resizeCanvas` now snapshots every frame's pre-resize buffer into an app-level `ResizeStep` (with the prior `lockedW/H`); `undo()/redo()` fall through to `undoResize/redoResize`, which revert/replay all frames together and restore the lock. `applyResize` also clears every frame's per-frame history at the resize barrier (`Frame.clearHistory`), so a stale pre-resize snapshot can no longer restore a mismatched size; creating/deleting a frame or starting a new doc clears the resize history (its snapshots reference that frame set).
+
+**PR-2. Surprising undo target on numbered frames after a resize.** Same root cause as PR-1, but worth calling out as its own UX defect: because the propagated resize pushes a resize entry onto *each* frame's undo stack, a user who draws on frame `2`, switches to `base`, resizes, then returns to frame `2` and presses Ctrl+Z will **undo the resize** (shrinking only frame `2`) instead of undoing their drawing — the resize silently became the top of frame 2's history. Folding resize into a single app-level undo (PR-1) fixes this too.
+
+**PR-3. `resizeCanvas` no-op guard only inspects the active frame.** `if (w == active.canvas.width && h == active.canvas.height) return` (`AppState.kt:161`) compares only `base`. Under the normal invariant all frames share a size so this is fine, but once PR-1 lets sizes diverge, a resize back to base's current size early-returns without re-syncing the other (still-divergent) frames. Resolving PR-1 makes this moot; otherwise compare/repair all frames.
+
+## Frame management & UX
+
+**PR-4. Frame deletion is immediate, destructive, and not undoable.** Both the tab "✕" (`TabBar.kt`) and Frame ▸ Delete Current Frame (`Main.kt`) call `deleteFrame` with no confirmation, and there is no undo for it — a frame's entire pixel buffer and history are gone on a single (easily mis-clicked) tap next to the tab's activate target. Spec §8.5 doesn't require undo, but given the app's animation workflow this is real data-loss risk. Consider a confirm prompt (and/or making delete undoable).
+
+**PR-5. Mid-gesture frame switch edits the hidden frame.** `gestureFrame` is captured at press (`AppState.kt`) and `onDrag`/`onRelease` keep mutating it. Pressing a number key during an active mouse drag switches `activeFrameIndex` (the view now shows the new frame) while the stroke continues writing to — and committing on — the *original* frame, whose `bump()`s aren't observed by the view. The in-progress stroke appears to vanish and lands on a now-hidden frame. Edge case (needs keyboard during drag); low severity. Could ignore number keys while a gesture is active, or commit the gesture first. **ACCEPTED - ADDED** (commit-the-gesture-first variant) — new `AppState.commitActiveGesture()` pushes the in-progress stroke's undo entry and ends the gesture; it is called from `activateFrame`/`gotoOrCreateFrame` (and `deleteFrame`/`newDocument`) before the active frame changes, so the stroke commits on the frame it started on and the live drag becomes a no-op until the next press. This also covers switching via a tab click, not just number keys.
+
+**PR-6. `textFieldFocused` is a single shared flag set by only one field.** The hex field reports focus (`ColorPicker.kt`, `onFocusChanged`) to suppress frame-key navigation (`Main.kt:48`). It works today, but it's fragile: any future focusable text input must remember to toggle the same flag or number keys will hijack typing, and if a focused field ever leaves composition without firing `onFocusChanged(false)` the flag sticks and frame keys stay dead. Prefer deriving suppression from actual focus state, or at least centralize the contract.
+
+## Efficiency
+
+**PR-7. Onion overlay forgoes the visible-sub-rectangle optimization the main bitmap uses.** The main canvas pass deliberately uploads/draws only the visible source sub-rect to bound cost by the viewport (CanvasView, step-2 design). The onion pass instead draws the *entire* snapshot scaled to `onion.width * scale` (`CanvasView.kt:179`) and relies on `clipRect` to trim it. At high zoom on a large frame that hands Skia a very large destination rect to clip every frame the overlay is on. Mirror the main pass's `srcOffset`/`srcSize` sub-rect math for the onion draw so both scale the same way. **ACCEPTED - ADDED** — the onion pass now reuses the main pass's visible `srcL/srcT/srcR/srcB` sub-rect (coerced to the onion's dimensions) and draws only that sub-rectangle with matching `dstOffset`/`dstSize`, so its cost is bounded by the viewport like the main bitmap; the whole-snapshot scale + `clipRect` was removed.
+
+## Minor / polish
+
+**PR-8. `Ctrl+Y` redo accelerator dropped.** Redo is now only `Ctrl+Shift+Z` (`Main.kt:68`); the step-1–4 window handler also accepted `Ctrl+Y`. Minor regression for users who expect `Ctrl+Y`; add it back as a second accelerator if desired. **ACCEPTED - ADDED** — the window `onKeyEvent` now handles `Ctrl+Y` (no Alt/Shift) as a second Redo accelerator that calls `app.redo()`, alongside the menu's `Ctrl+Shift+Z`.
+
+**PR-9. `Shift`+digit also navigates frames.** `digitKey` ignores modifiers (`Main.kt:50`), so `Shift+1`…`Shift+9` switch/create frames just like the bare digits. Harmless but undocumented; fine to leave, worth a note.
+
+**PR-10. `TabBar` hardcodes the `"base"` string** (`TabBar.kt:41`) rather than sharing the `BASE` constant (currently `private` in both `AppState` and effectively duplicated). Promote one shared constant to avoid drift if the base label ever changes.
+
+**PR-11. Not built.** This is a static read of the diff; I did not run `./gradlew run`/`build`. The code is internally consistent (imports, symbols, types line up), but a compile + a quick manual pass (create frames 1→3, delete `2`, toggle onion, resize base with frames present, then undo on each frame) would confirm PR-1/PR-2 behavior in particular.
+
+## PR summary
+
+Solid, spec-faithful implementation of frame tabs and onion skin; the per-frame
+state split is the right shape. The one issue worth fixing before merge is
+**PR-1/PR-2** — propagated resize must be a single atomic undo across all frames,
+or per-frame undo will silently break the equal-size invariant the onion overlay
+and §8.4 depend on. **PR-4** (unconfirmed, irreversible frame delete) is the next
+most important given the animation workflow. The rest are minor.

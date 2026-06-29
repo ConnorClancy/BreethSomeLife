@@ -55,6 +55,15 @@ fun ResizeDialog(app: AppState, onDismiss: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),
                 )
+                if (app.numberedFrameCount > 0) {
+                    Text(
+                        "⚠ This resizes all frames (base + ${app.numberedFrameCount} numbered) " +
+                            "and may crop pixels outside the new size.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
             }
         },
         confirmButton = {

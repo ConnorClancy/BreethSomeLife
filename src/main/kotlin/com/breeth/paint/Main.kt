@@ -12,7 +12,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.KeyShortcut
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.MenuBar
@@ -23,18 +29,41 @@ import com.breeth.paint.app.AppState
 import com.breeth.paint.render.CanvasView
 import com.breeth.paint.ui.ControlsPanel
 import com.breeth.paint.ui.ResizeDialog
+import com.breeth.paint.ui.TabBar
 
 fun main() = application {
     val app = remember { AppState() }
+    var showResize by remember { mutableStateOf(false) }
     val windowState = rememberWindowState(size = DpSize(1140.dp, 840.dp))
 
     Window(
         onCloseRequest = ::exitApplication,
         state = windowState,
         title = "BreethPaint",
+        // Frame keys (spec §8.2/§8.3). Suppressed while the resize dialog is open
+        // or the hex field has focus, so digits typed there don't switch frames.
+        // Ctrl/Alt combos otherwise fall through to the menu accelerators.
+        onKeyEvent = { e ->
+            when {
+                e.type != KeyEventType.KeyDown -> false
+                // Ctrl+Y as a second Redo accelerator alongside the menu's
+                // Ctrl+Shift+Z, restoring the step-1–4 binding.
+                e.isCtrlPressed && !e.isAltPressed && !e.isShiftPressed && e.key == Key.Y -> {
+                    app.redo(); true
+                }
+                !e.isCtrlPressed && !e.isAltPressed && !showResize && !app.textFieldFocused -> {
+                    val digit = digitKey(e.key)
+                    when {
+                        digit == 0 -> { app.activateFrame(0); true }                 // 0 → base
+                        digit != null -> { app.gotoOrCreateFrame(digit); true }      // 1–9 → frame
+                        e.isShiftPressed && e.key == Key.O -> { app.toggleOnionSkin(); true }
+                        else -> false
+                    }
+                }
+                else -> false
+            }
+        },
     ) {
-        var showResize by remember { mutableStateOf(false) }
-
         MenuBar {
             Menu("File", mnemonic = 'F') {
                 Item("New", shortcut = KeyShortcut(Key.N, ctrl = true), onClick = { app.newDocument() })
@@ -45,12 +74,21 @@ fun main() = application {
                 Item("Clear Canvas", onClick = { app.clearCanvas() })
             }
             Menu("Image", mnemonic = 'I') {
-                Item("Resize…", onClick = { showResize = true })
+                // Only base is resizable; the resize propagates to all frames (§8.4 override).
+                Item("Resize…", enabled = app.onBase, onClick = { showResize = true })
                 CheckboxItem(
                     "Transparent Background",
                     checked = app.transparent,
                     onCheckedChange = { app.toggleTransparency() },
                 )
+            }
+            Menu("Frame", mnemonic = 'R') {
+                CheckboxItem(
+                    "Onion Skin",
+                    checked = app.onionSkin,
+                    onCheckedChange = { app.toggleOnionSkin() },
+                )
+                Item("Delete Current Frame", enabled = app.canDeleteActive, onClick = { app.deleteFrame(app.activeFrameIndex) })
             }
         }
 
@@ -58,6 +96,7 @@ fun main() = application {
             Surface {
                 Column(Modifier.fillMaxSize()) {
                     ControlsPanel(app)
+                    TabBar(app)
                     // Neutral backdrop so the canvas + checkerboard stand out.
                     Surface(
                         Modifier.weight(1f).fillMaxSize(),
@@ -72,4 +111,19 @@ fun main() = application {
             if (showResize) ResizeDialog(app, onDismiss = { showResize = false })
         }
     }
+}
+
+/** Map a top-row number key to its digit (0–9), or null. */
+private fun digitKey(key: Key): Int? = when (key) {
+    Key.Zero -> 0
+    Key.One -> 1
+    Key.Two -> 2
+    Key.Three -> 3
+    Key.Four -> 4
+    Key.Five -> 5
+    Key.Six -> 6
+    Key.Seven -> 7
+    Key.Eight -> 8
+    Key.Nine -> 9
+    else -> null
 }
