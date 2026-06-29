@@ -75,7 +75,7 @@ class Frame(
         pendingUndo = if (mutates) snapshot() else null
     }
 
-    /** Push the gesture's undo entry only if pixels actually changed (review #1). */
+    /** Push the gesture's undo entry only if pixels actually changed. */
     fun commitGesture() {
         pendingUndo?.let { before ->
             if (!before.pixels.contentEquals(canvas.pixels)) pushUndo(before)
@@ -112,8 +112,36 @@ class Frame(
     /** Clear the foreground to empty; the background layer shows behind it. */
     fun clearCanvas() = edit { canvas.fill(Colors.TRANSPARENT) }
 
-    /** Resize/crop, anchored top-left; new area is empty foreground. */
-    fun resizeTo(newW: Int, newH: Int) = edit { canvas.resizeTo(newW, newH, Colors.TRANSPARENT) }
+    /**
+     * Resize/crop the buffer, anchored top-left; new area is empty foreground.
+     * Undo for a propagated resize is owned by AppState as one atomic, cross-frame
+     * step, so this pushes **no** per-frame undo entry.
+     */
+    fun resizeBuffer(newW: Int, newH: Int) {
+        canvas.resizeTo(newW, newH, Colors.TRANSPARENT)
+        bump()
+    }
+
+    /** Replace the buffer wholesale (app-level resize undo/redo). */
+    fun restoreBuffer(newW: Int, newH: Int, newPixels: IntArray) {
+        canvas.width = newW
+        canvas.height = newH
+        canvas.pixels = newPixels
+        bump()
+    }
+
+    /**
+     * Drop this frame's undo/redo history — used as a resize barrier.
+     * A pre-resize snapshot would restore a now-mismatched size and break the
+     * equal-size invariant the onion overlay and §8.4 depend on, so a propagated
+     * resize clears per-frame history and is undone atomically at the app level.
+     */
+    fun clearHistory() {
+        undoStack.clear()
+        redoStack.clear()
+        pendingUndo = null
+        syncHistoryFlags()
+    }
 
     /** Toggle the background on/off (non-destructive); pixels untouched. */
     fun toggleTransparency() = edit { transparent = !transparent }

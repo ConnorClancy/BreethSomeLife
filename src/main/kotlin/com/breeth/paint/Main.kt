@@ -42,20 +42,25 @@ fun main() = application {
         title = "BreethPaint",
         // Frame keys (spec §8.2/§8.3). Suppressed while the resize dialog is open
         // or the hex field has focus, so digits typed there don't switch frames.
-        // Ctrl/Alt combos fall through to the menu accelerators.
+        // Ctrl/Alt combos otherwise fall through to the menu accelerators.
         onKeyEvent = { e ->
-            if (e.type == KeyEventType.KeyDown && !e.isCtrlPressed && !e.isAltPressed &&
-                !showResize && !app.textFieldFocused
-            ) {
-                val digit = digitKey(e.key)
-                when {
-                    digit == 0 -> { app.activateFrame(0); true }                 // 0 → base
-                    digit != null -> { app.gotoOrCreateFrame(digit); true }      // 1–9 → frame
-                    e.isShiftPressed && e.key == Key.O -> { app.toggleOnionSkin(); true }
-                    else -> false
+            when {
+                e.type != KeyEventType.KeyDown -> false
+                // Ctrl+Y as a second Redo accelerator alongside the menu's
+                // Ctrl+Shift+Z, restoring the step-1–4 binding.
+                e.isCtrlPressed && !e.isAltPressed && !e.isShiftPressed && e.key == Key.Y -> {
+                    app.redo(); true
                 }
-            } else {
-                false
+                !e.isCtrlPressed && !e.isAltPressed && !showResize && !app.textFieldFocused -> {
+                    val digit = digitKey(e.key)
+                    when {
+                        digit == 0 -> { app.activateFrame(0); true }                 // 0 → base
+                        digit != null -> { app.gotoOrCreateFrame(digit); true }      // 1–9 → frame
+                        e.isShiftPressed && e.key == Key.O -> { app.toggleOnionSkin(); true }
+                        else -> false
+                    }
+                }
+                else -> false
             }
         },
     ) {

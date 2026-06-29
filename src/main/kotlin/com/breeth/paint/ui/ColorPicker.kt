@@ -121,7 +121,7 @@ private fun ColorBox(argb: Int, size: Int, onPick: ((MouseButton) -> Unit)? = nu
 @Composable
 private fun HexField(app: AppState) {
     var text by remember { mutableStateOf(toHex(app.primary)) }
-    // #2: re-sync when primary changes elsewhere (eyedropper / palette swatch),
+    // Re-sync when primary changes elsewhere (eyedropper / palette swatch),
     // but leave an in-progress edit alone when it already represents the value.
     LaunchedEffect(app.primary) {
         val hex = toHex(app.primary)

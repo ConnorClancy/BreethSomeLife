@@ -13,7 +13,7 @@ import java.awt.image.BufferedImage
  * ints — exactly our packing — so `setRGB` is a bulk array copy with no
  * per-pixel conversion.
  *
- * #6: the backing [BufferedImage] is **reused** across frames (reallocated only
+ * The backing [BufferedImage] is **reused** across frames (reallocated only
  * when the canvas size changes), so a live stroke no longer allocates a fresh
  * `w*h` int buffer on every pointer-move — eliminating that per-frame GC churn.
  * The final Compose upload still happens each frame; the dirty-rect GPU

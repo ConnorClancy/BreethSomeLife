@@ -49,7 +49,7 @@ import kotlin.math.roundToInt
 fun CanvasView(app: AppState, modifier: Modifier = Modifier) {
     // Re-upload the buffer whenever a mutation bumps the version (§3.2) or the
     // active frame changes (different frames can share a version number). The
-    // cache reuses a single long-lived BufferedImage across frames (#6).
+    // cache reuses a single long-lived BufferedImage across frames.
     val imageCache = remember { CanvasImageCache() }
     val image = remember(app.activeFrameIndex, app.version) { imageCache.render(app.canvas) }
 
@@ -71,7 +71,7 @@ fun CanvasView(app: AppState, modifier: Modifier = Modifier) {
                     val mods = event.keyboardModifiers
                     val compW = size.width.toFloat()
                     val compH = size.height.toFloat()
-                    // Read canvas dims live so hit-testing follows a resize (#14).
+                    // Read canvas dims live so hit-testing follows a resize.
                     val cw = app.canvas.width
                     val ch = app.canvas.height
                     // Keep the transform in sync with hit-testing (§15.1).
@@ -167,16 +167,23 @@ fun CanvasView(app: AppState, modifier: Modifier = Modifier) {
 
         // Onion skin (spec §8.3): the snapshotted previous frame, drawn on top of
         // the current canvas at 30% alpha, aligned to the same pixel grid. Display
-        // only — never written to any buffer. Clipped to the current canvas rect.
+        // only — never written to any buffer. Mirrors the main pass's visible
+        // sub-rectangle math so cost stays bounded by the viewport, not the zoom
+        // level — no whole-snapshot scale + clip. The onion matches the canvas
+        // size under the equal-size invariant; coerce defensively in case it doesn't.
         val onion = app.onionImage
         if (app.onionSkin && onion != null) {
-            clipRect(left, top, right, bottom) {
+            val oL = srcL.coerceIn(0, onion.width)
+            val oT = srcT.coerceIn(0, onion.height)
+            val oR = srcR.coerceIn(0, onion.width)
+            val oB = srcB.coerceIn(0, onion.height)
+            if (oR > oL && oB > oT) {
                 drawImage(
                     image = onion,
-                    srcOffset = IntOffset.Zero,
-                    srcSize = IntSize(onion.width, onion.height),
-                    dstOffset = IntOffset(pan.x.roundToInt(), pan.y.roundToInt()),
-                    dstSize = IntSize((onion.width * scale).roundToInt(), (onion.height * scale).roundToInt()),
+                    srcOffset = IntOffset(oL, oT),
+                    srcSize = IntSize(oR - oL, oB - oT),
+                    dstOffset = IntOffset((pan.x + oL * scale).roundToInt(), (pan.y + oT * scale).roundToInt()),
+                    dstSize = IntSize(((oR - oL) * scale).roundToInt(), ((oB - oT) * scale).roundToInt()),
                     alpha = 0.30f,
                     filterQuality = FilterQuality.None,
                 )

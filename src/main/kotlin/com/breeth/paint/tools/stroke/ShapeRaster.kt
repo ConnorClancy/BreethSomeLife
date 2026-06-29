@@ -81,7 +81,7 @@ fun rasterizeEllipse(
  * contiguous region matching the seed color (within `tolerance`) with
  * `replacement`.
  *
- * #8: spans (not pixels) are pushed onto a primitive [IntArray] stack — no
+ * Spans (not pixels) are pushed onto a primitive [IntArray] stack — no
  * `Integer` autoboxing and far fewer pushes than per-pixel 4-connected fill. A
  * `visited` mask keeps it correct even when `replacement` is itself within
  * `tolerance` of the target (which a pure overwrite test could not).
